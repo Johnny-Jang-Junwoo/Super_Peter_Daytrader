@@ -11,3 +11,10 @@ env/
 dist/
 build/
 *.egg-info/
+
+# Local data pipeline directories
+data_pipeline/
+models/*.pkl
+
+# Temporary files
+temp_*.csv
