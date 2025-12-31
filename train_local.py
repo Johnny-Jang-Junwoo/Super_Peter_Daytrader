@@ -1,14 +1,15 @@
 """
-Local AI Training Pipeline
+Local AI Training Pipeline (Google Drive Edition)
 
-This script processes downloaded CSV files and trains the behavioral cloning model
-on your local machine (where RAM is not limited like Azure Free Tier).
+This script trains the behavioral cloning model using data 
+DIRECTLY from your Google Drive folder.
 """
 
 import os
 import sys
 from pathlib import Path
 from datetime import datetime
+import pandas as pd
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -21,51 +22,37 @@ from trading_bot import (
     BehavioralClonerConfig,
 )
 
-
-# Configuration
-INBOX_DIR = "data_pipeline/incoming"
+# --- CONFIGURATION ---
+# The path you confirmed in verify_local_data.py
+GOOGLE_DRIVE_DIR = r"G:\My Drive\SuperPeterTrader"
 MODEL_OUTPUT_DIR = "models"
-PROCESSED_DIR = "data_pipeline/processed"
-
-
-def ensure_directories():
-    """Create necessary directories if they don't exist."""
-    for directory in [INBOX_DIR, MODEL_OUTPUT_DIR, PROCESSED_DIR]:
-        os.makedirs(directory, exist_ok=True)
-
-
-def get_csv_files():
-    """Get all CSV files from the inbox."""
-    if not os.path.exists(INBOX_DIR):
-        return []
-
-    csv_files = [f for f in os.listdir(INBOX_DIR) if f.endswith('.csv')]
-    return [os.path.join(INBOX_DIR, f) for f in csv_files]
-
 
 def train_model():
-    """Main training pipeline."""
-
     print("=" * 80)
-    print("🤖 SUPER PETER LOCAL AI TRAINER")
+    print("🤖 SUPER PETER TRADER - GOOGLE DRIVE TRAINING")
     print("=" * 80)
 
-    ensure_directories()
+    # 1. Setup Directories
+    os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
+    drive_path = Path(GOOGLE_DRIVE_DIR)
 
-    # Step 1: Find CSV files
-    csv_files = get_csv_files()
-
-    if not csv_files:
-        print(f"\n❌ No CSV files found in '{INBOX_DIR}'")
-        print("\n💡 Did you forget to run fetch_data.py first?")
-        print("   Run: python fetch_data.py")
+    # 2. Find CSV Files in Drive
+    if not drive_path.exists():
+        print(f"❌ Error: Google Drive path not found: {drive_path}")
         return
 
-    print(f"\n📁 Found {len(csv_files)} CSV file(s) to process:")
-    for f in csv_files:
-        print(f"   • {os.path.basename(f)}")
+    csv_files = sorted(drive_path.glob("*.csv"))
+    
+    if not csv_files:
+        print(f"\n❌ No CSV files found in '{drive_path}'")
+        print("   -> Please drop your trade CSVs into that Google Drive folder.")
+        return
 
-    # Step 2: Load trade data
+    print(f"\n📁 Found {len(csv_files)} file(s) in Drive:")
+    for f in csv_files:
+        print(f"   • {f.name}")
+
+    # 3. Load Trade Data
     print("\n" + "=" * 80)
     print("STEP 1: Loading Trade Data")
     print("=" * 80)
@@ -74,197 +61,84 @@ def train_model():
     all_trades = []
 
     for csv_file in csv_files:
-        print(f"\n📄 Processing: {os.path.basename(csv_file)}")
+        print(f"\n📄 Processing: {csv_file.name}")
         try:
+            # Note: We pass the full Path object
             trades = loader.load_trades(csv_file)
-            all_trades.append(trades)
-            print(f"   ✓ Loaded {len(trades)} trades")
+            if not trades.empty:
+                all_trades.append(trades)
+                print(f"   ✓ Loaded {len(trades)} trades")
         except Exception as e:
-            print(f"   ❌ Error loading {csv_file}: {e}")
-            continue
+            print(f"   ❌ Error loading {csv_file.name}: {e}")
 
     if not all_trades:
-        print("\n❌ Failed to load any trade data!")
+        print("\n❌ Failed to load any valid trades.")
         return
 
-    # Combine all trades
-    import pandas as pd
     combined_trades = pd.concat(all_trades, ignore_index=True)
-    print(f"\n✅ Total trades combined: {len(combined_trades)}")
+    combined_trades = combined_trades.sort_values("timestamp")
+    print(f"\n✅ Total combined trades: {len(combined_trades)}")
 
-    # Step 3: Fetch market data
+    # 4. Fetch Market Data (yfinance)
     print("\n" + "=" * 80)
     print("STEP 2: Fetching Market Data")
     print("=" * 80)
 
-    symbol = combined_trades["symbol"].iloc[0]
-    start_date = combined_trades["timestamp"].min()
-    end_date = combined_trades["timestamp"].max()
+    # Get symbol and date range from the loaded trades
+    symbol = combined_trades["symbol"].iloc[0] # Assuming single symbol for now
+    start_date = combined_trades["timestamp"].min() - pd.Timedelta(days=1)
+    end_date = combined_trades["timestamp"].max() + pd.Timedelta(days=1)
 
-    print(f"\n📊 Symbol: {symbol}")
-    print(f"📅 Date range: {start_date} to {end_date}")
+    print(f"   Target: {symbol}")
+    print(f"   Range:  {start_date.date()} to {end_date.date()}")
 
     try:
         market_df = loader.fetch_market_data(
             symbol=symbol,
             start_date=start_date,
             end_date=end_date,
-            interval="1m"
+            interval="1m" # Standard for day trading
         )
-
-        if market_df.empty:
-            print("\n⚠️  No market data available from yfinance")
-            print("   Note: 1-minute data only available for last 7-30 days")
-            print("   Creating synthetic data for demonstration...")
-
-            # Create synthetic data
-            import numpy as np
-            timestamps = pd.date_range(start=start_date, end=end_date, freq="1min")
-            base_price = 21450.0
-            num_candles = len(timestamps)
-            np.random.seed(42)
-
-            price_changes = np.random.randn(num_candles) * 5
-            close_prices = base_price + np.cumsum(price_changes)
-
-            market_df = pd.DataFrame({
-                "timestamp": timestamps,
-                "open": close_prices + np.random.randn(num_candles) * 2,
-                "high": close_prices + np.abs(np.random.randn(num_candles)) * 3,
-                "low": close_prices - np.abs(np.random.randn(num_candles)) * 3,
-                "close": close_prices,
-                "volume": np.random.randint(100, 1000, num_candles),
-                "symbol": symbol,
-            })
-            market_df["high"] = market_df[["high", "close"]].max(axis=1)
-            market_df["low"] = market_df[["low", "close"]].min(axis=1)
-
-        print(f"✅ Retrieved {len(market_df)} market candles")
-
     except Exception as e:
-        print(f"❌ Error fetching market data: {e}")
+        print(f"❌ API Error: {e}")
         return
 
-    # Step 4: Create training set
+    if market_df.empty:
+        print("❌ No market data found. Check your internet or the symbol.")
+        return
+
+    # 5. Create Training Set (Merge Trades + Market)
     print("\n" + "=" * 80)
-    print("STEP 3: Creating Training Set")
+    print("STEP 3: Training Model")
     print("=" * 80)
 
-    training_set = loader.create_training_set(
-        combined_trades,
-        market_df,
-        verbose=True
-    )
-
-    # Step 5: Add features
-    print("\n" + "=" * 80)
-    print("STEP 4: Feature Engineering")
-    print("=" * 80)
-
-    feature_config = FeatureEngineerConfig(
-        rsi_length=14,
-        ema_length=20,
-    )
-    feature_engineer = FeatureEngineer(feature_config)
-
-    training_set = training_set.rename(columns={"timestamp": "date"})
-    training_set = feature_engineer.transform(training_set)
-
-    # Add custom features
-    training_set["price_change"] = training_set["close"].pct_change()
-    training_set["volume_change"] = training_set["volume"].pct_change()
-    training_set["high_low_spread"] = (training_set["high"] - training_set["low"]) / training_set["close"]
-
-    # Drop NaN rows
-    training_set = training_set.dropna().reset_index(drop=True)
-
-    print(f"\n✅ Training set ready: {len(training_set)} samples")
-    print(f"📊 Features: {['close', 'volume', 'rsi', 'ema', 'price_change', 'volume_change', 'high_low_spread']}")
-
-    # Step 6: Train model
-    print("\n" + "=" * 80)
-    print("STEP 5: Training AI Model")
-    print("=" * 80)
-
-    cloner_config = BehavioralClonerConfig(
-        n_estimators=100,
-        max_depth=10,
-        random_state=42,
-        test_size=0.2,
-        class_weight="balanced"
-    )
-    cloner = BehavioralCloner(cloner_config)
-
-    feature_columns = [
-        "close", "volume", "rsi", "ema",
-        "price_change", "volume_change", "high_low_spread"
-    ]
-
-    X = training_set[feature_columns]
+    training_set = loader.create_training_set(combined_trades, market_df)
+    
+    # Feature Engineering
+    fe = FeatureEngineer(FeatureEngineerConfig(rsi_length=14, ema_length=20))
+    training_set = training_set.rename(columns={"timestamp": "date"}) # Fix column name for FE
+    training_set = fe.transform(training_set)
+    
+    # Clean up for training
+    training_set = training_set.dropna()
+    
+    # Prepare X (Features) and y (Target)
+    features = ["close", "volume", "rsi", "ema", "sentiment_score"]
+    X = training_set[features]
     y = training_set["target"]
 
-    print(f"\nTraining with {len(X)} samples...")
-    print(f"Target distribution: {y.value_counts().to_dict()}")
+    # Train
+    cloner = BehavioralCloner(BehavioralClonerConfig(n_estimators=100))
+    metrics = cloner.train_model(X, y)
 
-    try:
-        metrics = cloner.train_model(X, y, verbose=True)
-        print(f"\n✅ Training complete!")
-        print(f"   Train Accuracy: {metrics['train_accuracy']:.2%}")
-        print(f"   Test Accuracy: {metrics['test_accuracy']:.2%}")
-
-    except Exception as e:
-        print(f"\n❌ Training failed: {e}")
-        return
-
-    # Step 7: Save model
-    print("\n" + "=" * 80)
-    print("STEP 6: Saving Model")
-    print("=" * 80)
-
+    # 6. Save
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"behavioral_cloner_{symbol}_{timestamp}.pkl"
-    model_path = os.path.join(MODEL_OUTPUT_DIR, model_filename)
+    save_path = Path(MODEL_OUTPUT_DIR) / f"model_{symbol}_{timestamp}.pkl"
+    cloner.save_brain(save_path)
 
-    cloner.save_brain(model_path)
-    print(f"✅ Model saved to: {model_path}")
-
-    # Step 8: Move processed files
     print("\n" + "=" * 80)
-    print("STEP 7: Archiving Processed Files")
+    print(f"🚀 SUCCESS! Model saved to: {save_path}")
     print("=" * 80)
-
-    for csv_file in csv_files:
-        filename = os.path.basename(csv_file)
-        destination = os.path.join(PROCESSED_DIR, filename)
-
-        try:
-            import shutil
-            shutil.move(csv_file, destination)
-            print(f"📦 Archived: {filename}")
-        except Exception as e:
-            print(f"⚠️  Could not archive {filename}: {e}")
-
-    # Final summary
-    print("\n" + "=" * 80)
-    print("🎉 TRAINING COMPLETE!")
-    print("=" * 80)
-    print(f"✅ Processed {len(csv_files)} CSV file(s)")
-    print(f"✅ Trained on {len(training_set)} samples")
-    print(f"✅ Model saved: {model_filename}")
-    print(f"✅ Files archived to: {PROCESSED_DIR}")
-    print("\n💡 Next steps:")
-    print("   • Use the trained model for predictions")
-    print("   • Upload more CSV files to continue training")
-    print("   • Check 'models/' folder for saved models")
-    print("=" * 80)
-
 
 if __name__ == "__main__":
-    try:
-        train_model()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Training interrupted by user")
-    except Exception as e:
-        print(f"\n\n❌ Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
+    train_model()
